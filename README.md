@@ -9,6 +9,7 @@ Listens in real-time to the `captures` collection on PocketBase and generates an
 - If complete, fetches image files, builds a ping-pong GIF (1→4→1), saves to `output/`, and logs a JSON result.
 - On timeout or error, logs a JSON entry with `status: timeout|error` and details.
  - Frames are rotated by 180° before encoding.
+ - Optional stabilization: computes small XY shifts to align frames; crops inwards to hide borders.
 
 ## Setup
 1. Install Node.js 18+.
@@ -28,11 +29,14 @@ TIMEOUT_MS=5000
 LOG_LEVEL=info
 ```
 
-4. Optional: Configure GIF speed via `config.json` (overrides ENV):
+4. Optional: Configure via `config.json` (overrides ENV):
 
 ```
 {
-	"frameDelayMs": 120
+	"frameDelayMs": 120,       // GIF speed in ms per frame (smaller = faster)
+	"stabilize": true,         // enable/disable stabilization (default true)
+	"maxShiftPx": 6,           // +/- shift search window in pixels (0..50)
+	"cropPercent": 0.05        // extra inward crop (0.0 .. 0.3)
 }
 ```
 
@@ -48,6 +52,7 @@ GIFs are saved under `output/` with names like `gif_20240618142342_20240618_1423
 - Ignores existing records; only listens for new `create` events.
 - Uses `sharp` to normalize frames and `gif-encoder-2` to assemble the GIF.
  - Set GIF speed by editing `config.json` (frameDelayMs in milliseconds). Smaller is faster.
+ - Stabilization aligns frames via a simple SAD search on downscaled grayscale images and crops borders; tune with maxShiftPx and cropPercent.
 
 ### JSON log schema per attempt
 ```

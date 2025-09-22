@@ -3,6 +3,8 @@ import path from 'node:path';
 import sharp from 'sharp';
 import GIFEncoder from 'gif-encoder-2';
 import { logDebug } from './logger.js';
+import { getFrameDelayMs } from './config.js';
+import { getStabilizeEnabled, getMaxShiftPx, getCropPercent } from './config.js';
 
 // Purpose: Build an animated GIF from 4 images in ping-pong order.
 // Inputs: images (Buffer[]), width/height (optional, default based on first image), frameDelayMs.
@@ -11,35 +13,165 @@ export async function buildGifPingPong(imageBuffers, opts = {}) {
   if (!Array.isArray(imageBuffers) || imageBuffers.length !== 4) {
     throw new Error('buildGifPingPong requires exactly 4 frames');
   }
-  const frameDelayMs = opts.frameDelayMs ?? Number(process.env.FRAME_DELAY_MS ?? 120);
+  const frameDelayMs = opts.frameDelayMs ?? getFrameDelayMs();
 
   // Normalize frames to a consistent size using sharp
   const metas = await Promise.all(imageBuffers.map(async (buf) => sharp(buf).metadata()));
   const targetW = opts.width ?? metas[0]?.width ?? 640;
   const targetH = opts.height ?? metas[0]?.height ?? 480;
 
+  // Preprocess: rotate 180 and resize to target using cover, keep as PNG for compositing
+  const preFramesPng = await Promise.all(
+    imageBuffers.map(async (buf) =>
+      sharp(buf).rotate(180).resize(targetW, targetH, { fit: 'cover' }).png().toBuffer()
+    )
+  );
+
+  // Stabilization parameters
+  const stabilize = getStabilizeEnabled();
+  const maxShift = getMaxShiftPx();
+  const cropPercent = getCropPercent();
+
+  // Compute translational offsets via simple SAD search on downscaled grayscale images
+  let offsetsWork = [ {dx:0,dy:0}, {dx:0,dy:0}, {dx:0,dy:0}, {dx:0,dy:0} ];
+  let scaleX = 1, scaleY = 1;
+  let padX = 0, padY = 0; // per-axis padding for compositing
+  let offsets = [ {dx:0,dy:0}, {dx:0,dy:0}, {dx:0,dy:0}, {dx:0,dy:0} ];
+  if (stabilize) {
+    const workW = 320;
+    const workH = Math.max(120, Math.round((workW / targetW) * targetH));
+    scaleX = targetW / workW;
+    scaleY = targetH / workH;
+    logDebug(`Stabilizer scales: work=${workW}x${workH} target=${targetW}x${targetH} scaleX=${scaleX.toFixed(2)} scaleY=${scaleY.toFixed(2)}`);
+
+    async function toGray(buf) {
+      const { data, info } = await sharp(buf).grayscale().resize(workW, workH).raw().toBuffer({ resolveWithObject: true });
+      return { data, w: info.width, h: info.height };
+    }
+
+    const grayFrames = await Promise.all(preFramesPng.map(toGray));
+    const ref = grayFrames[0]; // use first frame as reference
+    const marginX = Math.floor(ref.w * 0.1);
+    const marginY = Math.floor(ref.h * 0.1);
+
+    function sadAt(a, b, dx, dy) {
+      // Compute SAD over overlapping region of a vs b shifted by (dx,dy)
+      const x0 = Math.max(marginX, marginX + dx);
+      const y0 = Math.max(marginY, marginY + dy);
+      const x1 = Math.min(a.w - marginX, b.w - marginX + dx);
+      const y1 = Math.min(a.h - marginY, b.h - marginY + dy);
+      if (x1 <= x0 || y1 <= y0) return Number.POSITIVE_INFINITY;
+      let sum = 0;
+      for (let y = y0; y < y1; y++) {
+        const ay = y * a.w;
+        const by = (y - dy) * b.w;
+        for (let x = x0; x < x1; x++) {
+          const ax = ay + x;
+          const bx = by + (x - dx);
+          const d = a.data[ax] - b.data[bx];
+          sum += d >= 0 ? d : -d;
+        }
+      }
+      return sum / ((x1 - x0) * (y1 - y0));
+    }
+
+    for (let i = 1; i < 4; i++) {
+      let best = { dx: 0, dy: 0, score: Number.POSITIVE_INFINITY };
+      const b = grayFrames[i];
+      for (let dy = -maxShift; dy <= maxShift; dy++) {
+        for (let dx = -maxShift; dx <= maxShift; dx++) {
+          const s = sadAt(ref, b, dx, dy);
+          if (s < best.score) best = { dx, dy, score: s };
+        }
+      }
+      offsetsWork[i] = { dx: best.dx, dy: best.dy };
+      logDebug(`Stabilize(work): frame ${i} best dx=${best.dx} dy=${best.dy} score=${best.score.toFixed(2)}`);
+    }
+    // Scale offsets to target resolution and compute padding
+    let maxAbsX = 0, maxAbsY = 0;
+    for (let i = 0; i < 4; i++) {
+      const dxFull = Math.round(offsetsWork[i].dx * scaleX);
+      const dyFull = Math.round(offsetsWork[i].dy * scaleY);
+      offsets[i] = { dx: dxFull, dy: dyFull };
+      if (Math.abs(dxFull) > maxAbsX) maxAbsX = Math.abs(dxFull);
+      if (Math.abs(dyFull) > maxAbsY) maxAbsY = Math.abs(dyFull);
+    }
+    const minPadX = Math.ceil(maxShift * scaleX);
+    const minPadY = Math.ceil(maxShift * scaleY);
+    padX = Math.max(minPadX, maxAbsX);
+    padY = Math.max(minPadY, maxAbsY);
+    logDebug(`Stabilize(target): offsets=${offsets.map(o=>`(${o.dx},${o.dy})`).join(' ')} padX=${padX} padY=${padY}`);
+  }
+
+  // Compute additional crop in pixels (user-defined) beyond stabilization margin (use max axis)
+  const baseCropPx = Math.round(Math.min(targetW, targetH) * cropPercent);
+  const finalCropPx = Math.max(0, baseCropPx) + (stabilize ? Math.max(padX, padY) : 0);
+
+  // Apply shifts and crop to eliminate borders introduced by stabilization and intentional crop
+  const origin = finalCropPx; // extract from this offset after padding
+  let croppedW = targetW - 2 * finalCropPx;
+  let croppedH = targetH - 2 * finalCropPx;
+  if (croppedW < 16 || croppedH < 16) {
+    // Ensure minimum viable size
+    const minSize = 16;
+    croppedW = Math.max(minSize, croppedW);
+    croppedH = Math.max(minSize, croppedH);
+  }
+
+  async function stabilizeAndCrop(pngBuf, dx, dy) {
+    if (!stabilize) {
+      // Just crop inwards a bit if requested
+      const img = sharp(pngBuf);
+      const out = await img
+        .extract({ left: finalCropPx, top: finalCropPx, width: croppedW, height: croppedH })
+        .raw()
+        .ensureAlpha()
+        .toBuffer({ resolveWithObject: true });
+      return out;
+    }
+    // Use extend() to pad image asymmetrically according to shift, then extract
+    const leftExt = Math.max(0, padX + Math.round(dx));
+    const topExt = Math.max(0, padY + Math.round(dy));
+    const rightExt = Math.max(0, padX - Math.round(dx));
+    const bottomExt = Math.max(0, padY - Math.round(dy));
+    const extW = targetW + leftExt + rightExt;
+    const extH = targetH + topExt + bottomExt;
+    logDebug(`Extend: L=${leftExt} T=${topExt} R=${rightExt} B=${bottomExt} -> ${extW}x${extH}; Extract: origin=${origin} size=${croppedW}x${croppedH}`);
+    const extended = sharp(pngBuf)
+      .extend({ top: topExt, left: leftExt, right: rightExt, bottom: bottomExt, background: { r:0,g:0,b:0,alpha:0 } });
+    const out = await extended
+      .extract({ left: origin, top: origin, width: croppedW, height: croppedH })
+      .raw()
+      .ensureAlpha()
+      .toBuffer({ resolveWithObject: true });
+    return out;
+  }
+
+  const processedFrames = [];
+  for (let i = 0; i < 4; i++) {
+    const { data, info } = await stabilizeAndCrop(preFramesPng[i], offsets[i].dx, offsets[i].dy);
+    if (!data || !data.length) throw new Error(`Stabilization produced empty buffer for frame ${i}`);
+    processedFrames.push({ data, info });
+  }
+
+  const encW = processedFrames[0].info.width;
+  const encH = processedFrames[0].info.height;
+
   // Build ping-pong sequence: 1,2,3,4,3,2
   const order = [0, 1, 2, 3, 2, 1];
-  const encoder = new GIFEncoder(targetW, targetH); // algorithm defaults to 'neuquant'
+  const encoder = new GIFEncoder(encW, encH); // defaults to 'neuquant'
   encoder.start();
   encoder.setRepeat(0); // loop forever
   encoder.setDelay(frameDelayMs);
   encoder.setQuality(10);
 
   for (const idx of order) {
-    // Convert to raw RGBA for encoder directly from original buffers
-    const { data, info } = await sharp(imageBuffers[idx])
-      .rotate(180)
-      .resize(targetW, targetH, { fit: 'cover' })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
+    const { data, info } = processedFrames[idx];
     if (!data) throw new Error(`Frame ${idx} produced no data buffer`);
-    if (!info || info.channels !== 4 || info.width !== targetW || info.height !== targetH) {
+    if (!info || info.channels !== 4 || info.width !== encW || info.height !== encH) {
       throw new Error(`Unexpected frame shape for index ${idx}: ${info?.width}x${info?.height}x${info?.channels}`);
     }
-    const expected = targetW * targetH * 4;
+    const expected = encW * encH * 4;
     if (data.length !== expected) {
       throw new Error(`Frame ${idx} buffer size mismatch: got ${data.length}, expected ${expected}`);
     }

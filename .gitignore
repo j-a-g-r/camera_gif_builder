@@ -1,0 +1,4 @@
+node_modules/
+output/*.gif
+output/results.log
+.env

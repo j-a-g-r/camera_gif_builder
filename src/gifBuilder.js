@@ -5,7 +5,7 @@ import GIFEncoder from 'gif-encoder-2';
 import { logDebug } from './logger.js';
 
 // Purpose: Build an animated GIF from 4 images in ping-pong order.
-// Inputs: images (Buffer[] or file paths), width/height (optional, default based on first image), frameDelayMs.
+// Inputs: images (Buffer[]), width/height (optional, default based on first image), frameDelayMs.
 // Output: Buffer of GIF data.
 export async function buildGifPingPong(imageBuffers, opts = {}) {
   if (!Array.isArray(imageBuffers) || imageBuffers.length !== 4) {
@@ -29,7 +29,7 @@ export async function buildGifPingPong(imageBuffers, opts = {}) {
   for (const idx of order) {
     // Convert to raw RGBA for encoder directly from original buffers
     const { data, info } = await sharp(imageBuffers[idx])
-      .rotate()
+      .rotate(180)
       .resize(targetW, targetH, { fit: 'cover' })
       .ensureAlpha()
       .raw()

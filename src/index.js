@@ -5,11 +5,12 @@ import fs from 'node:fs';
 import EventSource from 'eventsource';
 import { buildGifPingPong, saveUniqueGif } from './gifBuilder.js';
 import { logInfo, logWarn, logError, logDebug, writeJsonLog } from './logger.js';
+import { getFrameDelayMs } from './config.js';
 
 const POCKETBASE_URL = process.env.POCKETBASE_URL || 'https://cameradb.jakobgrote.de';
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.resolve('output');
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 5000);
-const FRAME_DELAY_MS = Number(process.env.FRAME_DELAY_MS || 120);
+const FRAME_DELAY_MS = getFrameDelayMs();
 const DEVICES = ['esp32s3cam-01', 'esp32s3cam-02', 'esp32s3cam-03', 'esp32s3cam-04'];
 
 // Conceptual steps this script performs:

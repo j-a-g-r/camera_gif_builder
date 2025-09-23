@@ -33,10 +33,16 @@ LOG_LEVEL=info
 
 ```
 {
-	"frameDelayMs": 120,       // GIF speed in ms per frame (smaller = faster)
-	"stabilize": true,         // enable/disable stabilization (default true)
-	"maxShiftPx": 6,           // +/- shift search window in pixels (0..50)
-	"cropPercent": 0.05        // extra inward crop (0.0 .. 0.3)
+	"frameDelayMs": 120,           // GIF speed in ms per frame (smaller = faster)
+	"stabilize": true,             // enable/disable stabilization (default true)
+	"maxShiftPx": 6,               // +/- shift search window in pixels (0..50)
+	"cropPercent": 0.05,           // extra inward crop before encoding (0.0 .. 0.3)
+
+	// Auto border removal (post-stabilization)
+	"autoBorderDetect": true,      // remove black/transparent borders across frames (default true)
+	"alphaThreshold": 8,           // treat alpha <= this as transparent (0..255)
+	"blackThreshold": 8,           // treat RGB <= this as black (0..255)
+	"autoBorderMarginPx": 0        // inward safety margin to avoid touching content (0..20)
 }
 ```
 
@@ -53,6 +59,10 @@ GIFs are saved under `output/` with names like `gif_20240618142342_20240618_1423
 - Uses `sharp` to normalize frames and `gif-encoder-2` to assemble the GIF.
  - Set GIF speed by editing `config.json` (frameDelayMs in milliseconds). Smaller is faster.
  - Stabilization aligns frames via a simple SAD search on downscaled grayscale images and crops borders; tune with maxShiftPx and cropPercent.
+ - Auto border removal scans all frames to find a common inner box without black/transparent edges, then crops to that box so borders don’t flicker.
+	 - If borders remain, increase `blackThreshold` (e.g., 12–24).
+	 - If edges look too tight, set `autoBorderMarginPx` to 1–3.
+	 - To disable, set `autoBorderDetect` to false.
 
 ### JSON log schema per attempt
 ```

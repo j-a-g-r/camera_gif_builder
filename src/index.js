@@ -3,9 +3,10 @@ import PocketBase from 'pocketbase';
 import path from 'node:path';
 import fs from 'node:fs';
 import EventSource from 'eventsource';
-import { buildGifPingPong, saveUniqueGif } from './gifBuilder.js';
+import { buildGifPingPong } from './gifBuilder.js';
 import { logInfo, logWarn, logError, logDebug, writeJsonLog } from './logger.js';
 import { getFrameDelayMs } from './config.js';
+import { uploadGifRecord } from './pocketbaseClient.js';
 
 const POCKETBASE_URL = process.env.POCKETBASE_URL || 'https://cameradb.jakobgrote.de';
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.resolve('output');
@@ -170,22 +171,20 @@ async function tryProcessGroup(key) {
 
   const { idStamp, pretty } = fmtParts(ts);
   const baseName = `gif_${idStamp}_${pretty}`; // gif_{timestamp}_{YYYYMMDD_HHMMSS}
-    logInfo('Saving GIF (purpose: persist output). Inputs: output dir, unique base name.');
-    const filePath = await saveUniqueGif(gifBuffer, baseName, OUTPUT_DIR);
-
-    // Validation
-  const ok = !!filePath && fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
-    if (!ok) throw new Error('Failed to obtain saved file path');
+    logInfo('Uploading GIF (purpose: persist to PocketBase). Inputs: GIF buffer, filename.');
+    const created = await uploadGifRecord(pb, gifBuffer, `${baseName}.gif`);
+    const fileName = created?.gif;
+    if (!created?.id || !fileName) throw new Error('Upload did not return a valid record');
 
     const logEntry = {
       timestamp_group: ts,
       record_ids,
       device_ids,
-      gif_path: filePath,
+      gif_record: { id: created.id, collectionId: created.collectionId, collectionName: created.collectionName, file: fileName },
       status: 'created',
     };
     writeJsonLog(logEntry, OUTPUT_DIR);
-    logInfo(`Created GIF at ${filePath}`);
+    logInfo(`Uploaded GIF to PocketBase gifs collection with id=${created.id}`);
   } catch (err) {
     // Track persistent errors in sliding window
     const now = Date.now();
@@ -217,6 +216,18 @@ function scheduleTimeoutSweep() {
 async function main() {
   logInfo('Starting PocketBase GIF listener...');
   logInfo(`Connecting to ${POCKETBASE_URL}`);
+
+  // Optional authentication (admin) if credentials are provided via env
+  const adminEmail = process.env.POCKETBASE_ADMIN_EMAIL;
+  const adminPassword = process.env.POCKETBASE_ADMIN_PASSWORD;
+  if (adminEmail && adminPassword) {
+    try {
+      await pb.admins.authWithPassword(adminEmail, adminPassword);
+      logInfo('Authenticated to PocketBase as admin.');
+    } catch (e) {
+      logWarn(`Admin auth failed: ${e?.message || e}`);
+    }
+  }
 
   // Real-time subscription: only new records
   await pb.collection('captures').subscribe('*', async (e) => {

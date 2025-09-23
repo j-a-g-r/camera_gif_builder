@@ -1,5 +1,5 @@
 {
-  "frameDelayMs": 200,
+  "frameDelayMs": 150,
  "maxShiftPx": 500,
  "cropPercent": 0.0
  

@@ -42,6 +42,15 @@ export function getMaxShiftPx() {
   return 6; // default ±6px search
 }
 
+export function getAutoBorderMarginPx() {
+  const cfgPath = path.resolve(process.cwd(), 'config.json');
+  const cfg = fs.existsSync(cfgPath) ? readJson(cfgPath) : {};
+  const v = Number(cfg.autoBorderMarginPx);
+  if (!Number.isNaN(v) && v >= 0 && v <= 20) return v;
+  const e = Number(process.env.AUTO_BORDER_MARGIN_PX);
+  if (!Number.isNaN(e) && e >= 0 && e <= 20) return e;
+  return 0; // no extra margin by default
+}
 export function getCropPercent() {
   const cfgPath = path.resolve(process.cwd(), 'config.json');
   const cfg = fs.existsSync(cfgPath) ? readJson(cfgPath) : {};
@@ -50,4 +59,34 @@ export function getCropPercent() {
   const e = Number(process.env.CROP_PERCENT);
   if (!Number.isNaN(e) && e >= 0 && e <= 0.3) return e;
   return 0.05; // default 5% inward crop
+}
+
+export function getAutoBorderDetect() {
+  const cfgPath = path.resolve(process.cwd(), 'config.json');
+  const cfg = fs.existsSync(cfgPath) ? readJson(cfgPath) : {};
+  if (typeof cfg.autoBorderDetect === 'boolean') return cfg.autoBorderDetect;
+  const env = process.env.AUTO_BORDER_DETECT;
+  if (env === '0' || env === 'false') return false;
+  if (env === '1' || env === 'true') return true;
+  return true; // default on
+}
+
+export function getAlphaThreshold() {
+  const cfgPath = path.resolve(process.cwd(), 'config.json');
+  const cfg = fs.existsSync(cfgPath) ? readJson(cfgPath) : {};
+  const v = Number(cfg.alphaThreshold);
+  if (!Number.isNaN(v) && v >= 0 && v <= 255) return v;
+  const e = Number(process.env.ALPHA_THRESHOLD);
+  if (!Number.isNaN(e) && e >= 0 && e <= 255) return e;
+  return 8; // consider alpha <= 8 as transparent
+}
+
+export function getBlackThreshold() {
+  const cfgPath = path.resolve(process.cwd(), 'config.json');
+  const cfg = fs.existsSync(cfgPath) ? readJson(cfgPath) : {};
+  const v = Number(cfg.blackThreshold);
+  if (!Number.isNaN(v) && v >= 0 && v <= 255) return v;
+  const e = Number(process.env.BLACK_THRESHOLD);
+  if (!Number.isNaN(e) && e >= 0 && e <= 255) return e;
+  return 8; // consider RGB <= 8 as black
 }

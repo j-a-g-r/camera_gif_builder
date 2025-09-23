@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import GIFEncoder from 'gif-encoder-2';
 import { logDebug } from './logger.js';
 import { getFrameDelayMs } from './config.js';
-import { getStabilizeEnabled, getMaxShiftPx, getCropPercent } from './config.js';
+import { getStabilizeEnabled, getMaxShiftPx, getCropPercent, getAutoBorderDetect, getAlphaThreshold, getBlackThreshold, getAutoBorderMarginPx } from './config.js';
 
 // Purpose: Build an animated GIF from 4 images in ping-pong order.
 // Inputs: images (Buffer[]), width/height (optional, default based on first image), frameDelayMs.
@@ -154,8 +154,98 @@ export async function buildGifPingPong(imageBuffers, opts = {}) {
     processedFrames.push({ data, info });
   }
 
-  const encW = processedFrames[0].info.width;
-  const encH = processedFrames[0].info.height;
+  // Optional auto-cropping to remove black/transparent borders across all frames
+  let encW = processedFrames[0].info.width;
+  let encH = processedFrames[0].info.height;
+  if (getAutoBorderDetect()) {
+    const alphaT = getAlphaThreshold();
+    const blackT = getBlackThreshold();
+    const margin = getAutoBorderMarginPx();
+    // Determine tight bounding box common to all frames where pixels are not black/transparent
+  // Track per-frame bounds, then intersect
+  let maxLeft = 0, maxTop = 0, minRight = encW - 1, minBottom = encH - 1;
+    for (const { data } of processedFrames) {
+      const w = encW, h = encH;
+      // Scan top
+      let top = 0;
+      for (; top < h; top++) {
+        let rowHasContent = false;
+        for (let x = 0; x < w; x++) {
+          const i = (top * w + x) * 4;
+          const a = data[i + 3];
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (a > alphaT && (r > blackT || g > blackT || b > blackT)) { rowHasContent = true; break; }
+        }
+        if (rowHasContent) break;
+      }
+      // Scan bottom
+      let bottom = h - 1;
+      for (; bottom >= 0; bottom--) {
+        let rowHasContent = false;
+        for (let x = 0; x < w; x++) {
+          const i = (bottom * w + x) * 4;
+          const a = data[i + 3];
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (a > alphaT && (r > blackT || g > blackT || b > blackT)) { rowHasContent = true; break; }
+        }
+        if (rowHasContent) break;
+      }
+      // Scan left
+      let left = 0;
+      for (; left < w; left++) {
+        let colHasContent = false;
+        for (let y = 0; y < h; y++) {
+          const i = (y * w + left) * 4;
+          const a = data[i + 3];
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (a > alphaT && (r > blackT || g > blackT || b > blackT)) { colHasContent = true; break; }
+        }
+        if (colHasContent) break;
+      }
+      // Scan right
+      let right = w - 1;
+      for (; right >= 0; right--) {
+        let colHasContent = false;
+        for (let y = 0; y < h; y++) {
+          const i = (y * w + right) * 4;
+          const a = data[i + 3];
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (a > alphaT && (r > blackT || g > blackT || b > blackT)) { colHasContent = true; break; }
+        }
+        if (colHasContent) break;
+      }
+      maxLeft = Math.max(maxLeft, left);
+      maxTop = Math.max(maxTop, top);
+      minRight = Math.min(minRight, right);
+      minBottom = Math.min(minBottom, bottom);
+    }
+
+    if (minRight >= maxLeft && minBottom >= maxTop) {
+      // Apply inward margin to avoid touching content edges
+      const leftI = Math.max(0, maxLeft + margin);
+      const topI = Math.max(0, maxTop + margin);
+      const rightI = Math.min(encW - 1, minRight - margin);
+      const bottomI = Math.min(encH - 1, minBottom - margin);
+      const cropW = Math.max(1, rightI - leftI + 1);
+      const cropH = Math.max(1, bottomI - topI + 1);
+      if (cropW >= 8 && cropH >= 8 && (cropW !== encW || cropH !== encH)) {
+        logDebug(`Auto-crop (intersection) to remove borders: left=${leftI} top=${topI} right=${rightI} bottom=${bottomI} -> ${cropW}x${cropH}`);
+        for (let i = 0; i < processedFrames.length; i++) {
+          const { data, info } = processedFrames[i];
+          const w = encW, h = encH;
+          const out = Buffer.alloc(cropW * cropH * 4);
+          for (let y = 0; y < cropH; y++) {
+            const srcY = topI + y;
+            const srcStart = (srcY * w + leftI) * 4;
+            const dstStart = y * cropW * 4;
+            data.copy(out, dstStart, srcStart, srcStart + cropW * 4);
+          }
+          processedFrames[i] = { data: out, info: { ...info, width: cropW, height: cropH } };
+        }
+        encW = cropW; encH = cropH;
+      }
+    }
+  }
 
   // Build ping-pong sequence: 1,2,3,4,3,2
   const order = [0, 1, 2, 3, 2, 1];

@@ -1,0 +1,6 @@
+{
+  "frameDelayMs": 200,
+ "maxShiftPx": 500,
+ "cropPercent": 0.0
+ 
+}

@@ -10,7 +10,7 @@ import { uploadGifRecord } from './pocketbaseClient.js';
 
 const POCKETBASE_URL = process.env.POCKETBASE_URL || 'https://cameradb.jakobgrote.de';
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.resolve('output');
-const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 5000);
+const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 10000);
 const FRAME_DELAY_MS = getFrameDelayMs();
 const DEVICES = ['esp32s3cam-01', 'esp32s3cam-02', 'esp32s3cam-03', 'esp32s3cam-04'];
 
@@ -108,15 +108,17 @@ function finalizeTimeouts() {
       // timeout
       const record_ids = [...group.recordsByDevice.values()].map((r) => r.id);
       const device_ids = [...group.recordsByDevice.keys()];
+      const missing_devices = DEVICES.filter(d => !device_ids.includes(d));
       const logEntry = {
         timestamp_group: group.firstTs,
         record_ids,
         device_ids,
+        missing_devices,
         gif_path: null,
         status: 'timeout',
       };
       writeJsonLog(logEntry, OUTPUT_DIR);
-      logWarn(`Timeout for group ${key}: got ${device_ids.length}/4 devices`);
+      logWarn(`Timeout for group ${key}: got ${device_ids.length}/4 devices (missing: ${missing_devices.join(', ')})`);
       groups.delete(key);
     }
   }
@@ -180,6 +182,7 @@ async function tryProcessGroup(key) {
       timestamp_group: ts,
       record_ids,
       device_ids,
+      missing_devices: [], // No missing devices in the success case
       gif_record: { id: created.id, collectionId: created.collectionId, collectionName: created.collectionName, file: fileName },
       status: 'created',
     };
@@ -193,11 +196,17 @@ async function tryProcessGroup(key) {
     if (recentErrors.length >= 3) {
       logWarn('ALERT: Persistent failures detected (>=3 errors in the last 60s). Investigate connectivity or storage.');
     }
+    
+    // Check if any devices were missing (shouldn't happen in this branch, but for consistency)
+    const actual_devices = device_ids || [];
+    const missing_devices = DEVICES.filter(d => !actual_devices.includes(d));
+    
     const logEntry = {
       timestamp_group: ts,
       record_ids,
       device_ids,
-      gif_path: null,
+      missing_devices,
+      gif_record: null,
       status: 'error',
       error: {
         message: err?.message || String(err),
